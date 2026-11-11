@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager # app의 lifespan 관리
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -11,20 +11,20 @@ from app.services.diary_service import DiaryService
 
 
 def create_app(db_path: Path | None = None) -> FastAPI:
-    @asynccontextmanager
+    @asynccontextmanager # app의 lifespan 관리. yield 이전은 시작 시, yield 이후는 종료 시 실행.
     async def lifespan(app: FastAPI):
-        init_db(db_path)
-        conn = get_connection(db_path)
-        service = DiaryService(conn, get_embedder())
-        service.load_index()
-        app.state.service = service
+        init_db(db_path) # db 테이블 생성(이미 있으면 유지)
+        conn = get_connection(db_path) # db 연결
+        service = DiaryService(conn, get_embedder()) # DiaryService 객체 생성
+        service.load_index() # 일기 벡터를 읽어, 검색할 수 있는 인덱스 구성.
+        app.state.service = service # 애플리케이션의 lifespan 동안 공통으로 사용할 수 있게 app.state에 저장
         try:
             yield
         finally:
             conn.close()
 
-    app = FastAPI(title="Re:mind API", lifespan=lifespan)
-    app.include_router(router)
+    app = FastAPI(title="Re:mind API", lifespan=lifespan) # API 담당하는 FastAPI 객체 생성
+    app.include_router(router) # 라우터를 FastAPI 애플리케이션에 등록
 
     @app.get("/")
     def root() -> dict:

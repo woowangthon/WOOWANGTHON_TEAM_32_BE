@@ -5,26 +5,26 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.schemas import DiaryOut, DiaryTextCreate, DiaryUpdate, RecallResponse
 from app.services.diary_service import DiaryNotFound, DiaryService, InvalidDiaryState
 
-router = APIRouter(prefix="/api/diaries", tags=["diaries"])
+router = APIRouter(prefix="/api/diaries", tags=["diaries"]) # 각 경로들을 모으고, 이후 main.py에서 include_router로 애플리케이션과 연결.
 
 
 def get_service(request: Request) -> DiaryService:
-    return request.app.state.service
+    return request.app.state.service # 현재 요청에서 애플리케이션의 service에 접근해 반환
 
 
 def _not_implemented(detail: str) -> HTTPException:
     return HTTPException(status_code=501, detail=detail)
 
 
-# 주의: /recall은 /{diary_id}보다 먼저 선언해야 경로가 겹치지 않는다.
+# /recall 등 정적 경로는 /{diary_id} 등 동적 경로보다 먼저 선언해야 의도한대로 실행할 수 있다.
 
 @router.get("/recall", response_model=RecallResponse)
 def recall(
     request: Request,
-    query: str = Query(min_length=1),
+    query: str = Query(min_length=1), # 검색용 키워드 파라미터.
     start_date: Date | None = None,
     end_date: Date | None = None,
-    top_k: int = Query(default=3, ge=1, le=20),
+    top_k: int = Query(default=3, ge=1, le=20), # 뽑을 개수 파라미터. 1에서 20 사이. default는 3.
 ) -> RecallResponse:
     return get_service(request).recall(query, start_date, end_date, top_k)
 
@@ -45,7 +45,7 @@ def create_from_text(request: Request, payload: DiaryTextCreate) -> DiaryOut:
 
 
 @router.get("", response_model=list[DiaryOut])
-def list_diaries(request: Request, status: str | None = Query(default=None, pattern="^(draft|confirmed)$")) -> list[DiaryOut]:
+def list_diaries(request: Request, status: str | None = Query(default=None, pattern="^(draft|confirmed)$")) -> list[DiaryOut]: # status 파라미터. draft나 confirmed로 제한(다른 건 422 에러)
     return get_service(request).list(status)
 
 
