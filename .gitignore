@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# 환경 변수와 API 키 (Clova OCR 키 등)
+.env
+
+# 런타임 데이터: 개인 일기 DB, 업로드 이미지 (공개 저장소에 올리지 않음)
+data/app.db
+data/app.db-*
+data/uploads/
+
+# 모델 가중치 (대용량, 별도 전달)
+models/
