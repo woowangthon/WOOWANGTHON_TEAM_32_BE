@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent # config.py 기준으로 2단계 위의 상위 폴더(루트 디렉터리)
 
 # 테스트 등에서 DATA_DIR 환경 변수로 경로를 바꿀 수 있게 한다.
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
