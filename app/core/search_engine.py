@@ -9,7 +9,7 @@ from datetime import date as Date
 import numpy as np
 
 
-@dataclass
+@dataclass # 특수 메서드를 자동 생성하기 위한 데코레이터(__init__, __repr__, __eq__ 등)
 class Entry:
     diary_id: int
     diary_date: Date
@@ -27,7 +27,7 @@ class SearchHit:
 
 @dataclass
 class VectorIndex:
-    entries: list[Entry] = field(default_factory=list)
+    entries: list[Entry] = field(default_factory=list) # field의 default_factory=list를 통해 내부적으로 list()를 호출해 새 객체를 지정하도록 함
 
     def remove_diary(self, diary_id: int) -> None:
         self.entries = [e for e in self.entries if e.diary_id != diary_id]
@@ -39,13 +39,13 @@ class VectorIndex:
         sentence_texts: list[str],
         vectors: np.ndarray,
     ) -> None:
-        self.remove_diary(diary_id)
+        self.remove_diary(diary_id) # 해당 일기 제거하고
         for text, vec in zip(sentence_texts, vectors):
-            self.entries.append(Entry(diary_id, diary_date, text, vec.astype(np.float32)))
+            self.entries.append(Entry(diary_id, diary_date, text, vec.astype(np.float32))) # 각 백터의 내부 타입을 float32로 설정해 entries에 추가
 
     def search(
         self,
-        query_vector: np.ndarray,
+        query_vector: np.ndarray, # 검색키워드(감정관련) 벡터
         start_date: Date | None,
         end_date: Date | None,
         top_k: int,
@@ -60,19 +60,19 @@ class VectorIndex:
         if not candidates:
             return []
 
-        matrix = np.stack([e.vector for e in candidates])
+        matrix = np.stack([e.vector for e in candidates]) # (조건 맞는 벡터 수, 256) 크기의 행렬(np.stack의 기본 축: 행)
         scores = matrix @ query_vector.astype(np.float32)  # 정규화 벡터끼리의 내적 = 코사인 유사도
 
         # 일기별 최고 점수 문장만 남긴다. 한 일기의 여러 문장이 결과를 채우지 않게 한다.
         best: dict[int, SearchHit] = {}
         for entry, score in zip(candidates, scores):
             score = float(score)
-            current = best.get(entry.diary_id)
-            if current is None or score > current.score:
-                best[entry.diary_id] = SearchHit(
+            current = best.get(entry.diary_id) # 일기별 현재 최고 점수 문장 가져옴
+            if current is None or score > current.score: # 없거나, 새 문장의 점수가 더 높으면
+                best[entry.diary_id] = SearchHit( # 새 일기로 교체
                     entry.diary_id, entry.diary_date, entry.sentence_text, score
                 )
 
-        hits = [h for h in best.values() if h.score >= threshold]
-        hits.sort(key=lambda h: h.score, reverse=True)
-        return hits[:top_k]
+        hits = [h for h in best.values() if h.score >= threshold] # 점수가 임계값 이상인 문장만 남김
+        hits.sort(key=lambda h: h.score, reverse=True) # 점수 기준 내림차순 정렬
+        return hits[:top_k] # top_k개 반환
