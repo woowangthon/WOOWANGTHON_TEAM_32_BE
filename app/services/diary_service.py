@@ -86,8 +86,8 @@ class DiaryService:
                 (diary_id, label),
             )
 
-    def _embed_and_index(self, diary_id: int) -> None:
-        """확정 일기의 문장을 벡터로 만들어 DB와 인덱스에 반영한다 (재벡터화 포함)."""
+    def _write_embeddings(self, diary_id: int) -> tuple[Date, list[str], np.ndarray]:
+        """확정 일기의 문장 벡터를 DB에 다시 쓴다 (재벡터화). 인덱스 갱신은 커밋 후에 한다."""
         diary = self._row(diary_id) # 일기 가져옴
         sentences = self.conn.execute( # 일기 내용(+id) 전부 가져옴
             "SELECT id, text FROM diary_sentences WHERE diary_id = ? ORDER BY sentence_index",
@@ -109,7 +109,7 @@ class DiaryService:
                 )
         else: # 문장이 없다면 영벡터로 설정
             vectors = np.zeros((0, self.embedder.dimension), dtype=np.float32)
-        self.index.replace_diary(diary_id, Date.fromisoformat(diary["date"]), texts, vectors) # 일기 관리 클래스에도 일기 정보 업데이트
+        return Date.fromisoformat(diary["date"]), texts, vectors
 
     def _row(self, diary_id: int) -> sqlite3.Row: # 해당하는 번호의 일기 가져옴
         row = self.conn.execute("SELECT * FROM diaries WHERE id = ?", (diary_id,)).fetchone()
@@ -160,8 +160,8 @@ class DiaryService:
     def load_index(self) -> None:
         """서버 시작 시 확정 일기의 벡터를 DB에서 읽어 인덱스를 구성한다."""
         with self._lock:
-            self.index = VectorIndex()
-            rows = self.conn.execute(
+            self.index.entries.clear() # 기존 항목을 비우고 DB 기준으로 다시 채운다 (중복 방지)
+            rows = self.conn.execute( # 감정이 확정된 일기의 id, date, 내용, 문장 벡터(byte 형태) 가져옴
                 """
                 SELECT d.id AS diary_id, d.date AS diary_date, s.text AS text, e.embedding AS embedding
                 FROM sentence_embeddings e
@@ -172,41 +172,41 @@ class DiaryService:
                 """
             ).fetchall()
             for r in rows:
-                vec = np.frombuffer(r["embedding"], dtype=np.float32)
-                self.index.entries.append(
+                vec = np.frombuffer(r["embedding"], dtype=np.float32) # 기존 데이터 담긴 메모리를 np.float32 형태로 읽음(데이터 복사 대신 메모리 참조)
+                self.index.entries.append( # 일기 관리 클래스에 일기(+인덱스) 추가
                     Entry(r["diary_id"], Date.fromisoformat(r["diary_date"]), r["text"], vec)
                 )
 
     def create_text_draft(self, diary_date: Date, content: str) -> DiaryOut:
-        with self._lock, self.conn:
-            now = self._now()
-            cur = self.conn.execute(
+        with self._lock, self.conn: # 스레드 동기화(한번에 하나의 스레드만 사용). 트랜잭션 관리.
+            now = self._now() # 현재 시간 문자열
+            cur = self.conn.execute( # draft 일기 DB에 저장
                 "INSERT INTO diaries (date, content, status, created_at, updated_at)"
                 " VALUES (?, ?, 'draft', ?, ?)",
                 (diary_date.isoformat(), content, now, now),
             )
-            diary_id = cur.lastrowid
-            self._store_analysis(diary_id, content)
-            return self._to_out(diary_id, with_sentences=True)
+            diary_id = cur.lastrowid # 가장 최근에 넣은 일기의 행 번호
+            self._store_analysis(diary_id, content) # 문장과 추천 감정 라벨 저장
+            return self._to_out(diary_id, with_sentences=True) # 일기 저장 결과 반환
 
-    def get(self, diary_id: int) -> DiaryOut:
+    def get(self, diary_id: int) -> DiaryOut: # 일기 조회 결과 반환
         return self._to_out(diary_id, with_sentences=True)
 
     def list(self, status: str | None = None) -> list[DiaryOut]:
         sql = "SELECT id FROM diaries"
         params: tuple = ()
-        if status:
+        if status: # status 명시되어 있으면 조건 추가
             sql += " WHERE status = ?"
             params = (status,)
-        sql += " ORDER BY date DESC, id DESC"
+        sql += " ORDER BY date DESC, id DESC" # 최신순으로 조회
         ids = [r["id"] for r in self.conn.execute(sql, params).fetchall()]
-        return [self._to_out(i) for i in ids]
+        return [self._to_out(i) for i in ids] # 일기들 조회 결과 리스트로 반환
 
     def update(self, diary_id: int, payload: DiaryUpdate) -> DiaryOut:
-        with self._lock, self.conn:
-            row = self._row(diary_id)
-            new_date = payload.date.isoformat() if payload.date else row["date"]
-            new_content = payload.content if payload.content is not None else row["content"]
+        with self._lock, self.conn: # 스레드 동기화. 트랜잭션 관리.
+            row = self._row(diary_id) # 해당 일기 가져옴
+            new_date = payload.date.isoformat() if payload.date else row["date"] # 페이로드에 날짜 있으면 그거로, 없으면 기존 날짜로 설정
+            new_content = payload.content if payload.content is not None else row["content"] # 페이로드 내용이 명시적으로 None만 아니면 그거로, 아니면 기존 내용으로 설정
 
             # 확정된 일기는 계속 confirmed로 유지한다 (기획서 답변 9번).
             # draft는 payload.status가 confirmed일 때만 확정된다.
@@ -215,34 +215,42 @@ class DiaryService:
                 if row["status"] == "confirmed" or payload.status == "confirmed"
                 else "draft"
             )
-            if target_status == "confirmed" and not new_date:
+            if target_status == "confirmed" and not new_date: # DB date가 비어있었고 새로 날짜가 안 들어온 경우
                 raise InvalidDiaryState("확정하려면 날짜(date)가 필요합니다.")
 
             content_changed = new_content != row["content"]
-            self.conn.execute(
+            self.conn.execute( # 일기 테이블 DB 업데이트
                 "UPDATE diaries SET date = ?, content = ?, status = ?, updated_at = ? WHERE id = ?",
                 (new_date, new_content, target_status, self._now(), diary_id),
             )
 
-            if content_changed or not self._has_sentences(diary_id):
-                self._store_analysis(diary_id, new_content)
+            if content_changed or not self._has_sentences(diary_id): # 내용이 바뀌었거나, 문장 테이블이 비어있는 경우 [질문]
+                self._store_analysis(diary_id, new_content) # 문장과 추천 감정 라벨 저장
 
-            if payload.emotion_tags is not None:
-                self._replace_confirmed_tags(diary_id, payload.emotion_tags)
+            if payload.emotion_tags is not None: # 페이로드에 확정 감정 라벨이 들어있으면
+                self._replace_confirmed_tags(diary_id, payload.emotion_tags) # 확정 감정 라벨 DB 저장
+            elif target_status == "confirmed" and row["status"] == "draft":
+                # 기본 동작: draft를 확정할 때 감정 라벨을 보내지 않았으면 추천 라벨을 확정 라벨로 복사한다
+                self._replace_confirmed_tags(diary_id, self._tags(diary_id, "suggested"))
 
-            if target_status == "confirmed":
-                # 확정 또는 확정 일기 수정: 문장 벡터를 현재 본문 기준으로 다시 만든다 (재벡터화)
-                self._embed_and_index(diary_id)
+            # 확정 또는 확정 일기 수정: 문장 벡터를 현재 본문 기준으로 다시 만든다 (재벡터화, DB 쓰기만)
+            embedded = self._write_embeddings(diary_id) if target_status == "confirmed" else None
+
+            self.conn.commit()  # DB 변경을 먼저 확정한 뒤에 인덱스를 갱신한다
+
+            if embedded is not None:
+                self.index.replace_diary(diary_id, *embedded) # 일기 관리 클래스에 반영
             else:
-                self.index.remove_diary(diary_id)
+                self.index.remove_diary(diary_id) # 확정 안 된 일기는 인덱스에서 제거
 
             return self._to_out(diary_id, with_sentences=True)
 
     def delete(self, diary_id: int) -> None:
-        with self._lock, self.conn:
-            row = self._row(diary_id)
-            self.conn.execute("DELETE FROM diaries WHERE id = ?", (diary_id,))
-            self.index.remove_diary(diary_id)
+        with self._lock, self.conn: # 스레드 동기화. 트랜잭션 관리.
+            row = self._row(diary_id) # 일기 가져옴
+            self.conn.execute("DELETE FROM diaries WHERE id = ?", (diary_id,)) # DB에서 제거
+            self.conn.commit()  # DB 커밋 후에 인덱스를 갱신한다
+            self.index.remove_diary(diary_id) # 일기 관리 클래스에서도 제거
             # TODO: row["image_path"]가 있으면 업로드 이미지 파일도 삭제 (이미지 단계에서 구현)
 
     def recall(
@@ -253,7 +261,7 @@ class DiaryService:
         top_k: int,
     ) -> RecallResponse:
         query_vec = self.embedder.encode([query])[0]
-        hits = self.index.search(
+        hits = self.index.search( # 일기 클래스 상에서 검색해서 top_k개 반환
             query_vec,
             start_date,
             end_date,
@@ -265,7 +273,7 @@ class DiaryService:
 
         results = []
         for h in hits:
-            row = self._row(h.diary_id)
+            row = self._row(h.diary_id) # 일기 가져옴
             results.append(
                 RecallResult(
                     diary_id=h.diary_id,
@@ -273,14 +281,14 @@ class DiaryService:
                     content=row["content"],
                     matched_text=h.matched_text,
                     image=None,
-                    emotion_tags=self._tags(h.diary_id, "confirmed"),
+                    emotion_tags=self._tags(h.diary_id, "confirmed"), # 확정된 감정 라벨
                     score=round(h.score, 4),
                 )
             )
         return RecallResponse(results=results, message=None)
 
     def _has_sentences(self, diary_id: int) -> bool:
-        row = self.conn.execute(
+        row = self.conn.execute( # 문장 개수 계산
             "SELECT COUNT(*) AS n FROM diary_sentences WHERE diary_id = ?", (diary_id,)
         ).fetchone()
-        return row["n"] > 0
+        return row["n"] > 0 # 문장이 있는지 여부 반환
