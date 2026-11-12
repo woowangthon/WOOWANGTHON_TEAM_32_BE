@@ -82,6 +82,13 @@ def test_delete_removes_diary_and_index(client):
     assert client.get("/api/diaries/recall", params={"query": "지울 일기"}).json()["results"] == []
 
 
+def test_confirm_without_tags_uses_suggested(client):
+    did = client.post("/api/diaries/text", json={"date": "2026-11-04", "content": "확정만 한다."}).json()["diary_id"]
+    body = client.patch(f"/api/diaries/{did}", json={"status": "confirmed"}).json()
+    assert body["suggested_tags"] == [config.NEUTRAL_LABEL]
+    assert body["emotion_tags"] == body["suggested_tags"]
+
+
 def test_unimplemented_endpoints_return_501(client):
     assert client.get("/api/diaries/analytics").status_code == 501
     assert client.get("/api/diaries/1/similar").status_code == 501
