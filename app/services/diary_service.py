@@ -11,10 +11,12 @@ import numpy as np
 from app import config
 from app.core import emotion
 from app.core.date_extractor import extract_date
+from app.core.keywords import top_keywords
 from app.core.embedder import Embedder
 from app.core.search_engine import Entry, VectorIndex
 from app.core.sentence_splitter import split_sentences
 from app.schemas import (
+    AnalyticsOut,
     DiaryOut,
     DiaryUpdate,
     RecallResponse,
@@ -352,6 +354,77 @@ class DiaryService:
     @staticmethod
     def _image_url(row: sqlite3.Row) -> str | None:
         return f"/api/diaries/{row['id']}/image" if row["image_path"] else None
+
+    def analytics(self, start_date: Date | None, end_date: Date | None) -> AnalyticsOut:
+        """기간 안의 확정 일기로 감정 평균과 키워드를 계산한다 (기획서 3.5, 4.4)."""
+        sql = "SELECT id, content FROM diaries WHERE status = 'confirmed' AND date IS NOT NULL"
+        params: list = []
+        if start_date:
+            sql += " AND date >= ?"
+            params.append(start_date.isoformat())
+        if end_date:
+            sql += " AND date <= ?"
+            params.append(end_date.isoformat())
+        rows = self.conn.execute(sql, params).fetchall()
+
+        totals = {label: 0.0 for label in config.EMOTION_LABELS}
+        for r in rows:
+            tags = self._tags(r["id"], "confirmed")
+            if not tags:
+                continue
+            share = 1.0 / len(tags)  # 한 일기의 태그 여러 개가 1을 나눠 갖는다
+            for tag in tags:
+                if tag in totals:
+                    totals[tag] += share
+        n = len(rows)
+        average = {label: round(total / n, 4) if n else 0.0 for label, total in totals.items()}
+
+        return AnalyticsOut(
+            start_date=start_date,
+            end_date=end_date,
+            diary_count=n,
+            average=average,
+            top_keywords=top_keywords([r["content"] for r in rows], top_k=5),
+        )
+
+    def similar(self, diary_id: int, top_k: int = 3) -> RecallResponse:
+        """확정된 일기 하나와 비슷한 다른 일기를 찾는다 (기획서 3.4). 자기 자신은 뺀다.
+
+        이 일기의 문장 벡터 하나하나로 인덱스를 검색해, 다른 일기별 최고 점수를 모은다.
+        """
+        row = self._row(diary_id) # 없으면 DiaryNotFound
+        if row["status"] != "confirmed":
+            raise InvalidDiaryState("확정된 일기만 비슷한 날을 찾을 수 있습니다.")
+
+        own_vectors = [e.vector for e in self.index.entries if e.diary_id == diary_id]
+        best: dict[int, tuple[float, str, Date]] = {}
+        for vec in own_vectors:
+            for hit in self.index.search(vec, None, None, top_k=50, threshold=config.RECALL_SCORE_THRESHOLD):
+                if hit.diary_id == diary_id:
+                    continue
+                current = best.get(hit.diary_id)
+                if current is None or hit.score > current[0]:
+                    best[hit.diary_id] = (hit.score, hit.matched_text, hit.diary_date)
+
+        ranked = sorted(best.items(), key=lambda kv: (-kv[1][0], kv[0]))[:top_k]
+        if not ranked:
+            return RecallResponse(results=[], message="비슷한 기록을 찾지 못했습니다.")
+
+        results = []
+        for other_id, (score, matched, other_date) in ranked:
+            other = self._row(other_id)
+            results.append(
+                RecallResult(
+                    diary_id=other_id,
+                    date=other_date,
+                    content=other["content"],
+                    matched_text=matched,
+                    image=self._image_url(other),
+                    emotion_tags=self._tags(other_id, "confirmed"),
+                    score=round(score, 4),
+                )
+            )
+        return RecallResponse(results=results, message=None)
 
     def _has_sentences(self, diary_id: int) -> bool:
         row = self.conn.execute( # 문장 개수 계산

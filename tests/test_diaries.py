@@ -7,11 +7,6 @@ from app.core.sentence_splitter import split_sentences
 from app.main import create_app
 
 
-@pytest.fixture
-def client(tmp_path):
-    app = create_app(tmp_path / "test.db")
-    with TestClient(app) as c:
-        yield c
 
 
 def test_split_sentences_uses_kiwi():
@@ -89,6 +84,5 @@ def test_confirm_without_tags_uses_suggested(client):
     assert body["emotion_tags"] == body["suggested_tags"]
 
 
-def test_unimplemented_endpoints_return_501(client):
-    assert client.get("/api/diaries/analytics").status_code == 501
-    assert client.get("/api/diaries/1/similar").status_code == 501
+def test_similar_on_missing_diary_is_404(client):
+    assert client.get("/api/diaries/999/similar").status_code == 404

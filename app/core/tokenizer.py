@@ -136,3 +136,8 @@ def ngrams(tokens: list[str], ngram_range: tuple[int, int] = (1, 2)) -> list[str
     for n in range(lo, hi + 1):
         out.extend(" ".join(tokens[i : i + n]) for i in range(len(tokens) - n + 1))
     return out
+
+
+def get_kiwi() -> Kiwi:
+    """키워드 추출 등 다른 모듈에서 같은 Kiwi 객체를 쓰도록 공개한다."""
+    return _kiwi()

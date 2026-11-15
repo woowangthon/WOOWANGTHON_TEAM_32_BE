@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 
 from app import config
 from app.core.ocr_client import OcrError
-from app.schemas import DiaryOut, DiaryTextCreate, DiaryUpdate, RecallResponse
+from app.schemas import AnalyticsOut, DiaryOut, DiaryTextCreate, DiaryUpdate, RecallResponse
 from app.services.diary_service import (
     DiaryNotFound,
     DiaryService,
@@ -23,10 +23,6 @@ def get_service(request: Request) -> DiaryService:
     return request.app.state.service # 현재 요청에서 애플리케이션의 service에 접근해 반환
 
 
-def _not_implemented(detail: str) -> HTTPException:
-    return HTTPException(status_code=501, detail=detail)
-
-
 # /recall 등 정적 경로는 /{diary_id} 등 동적 경로보다 먼저 선언해야 의도한대로 실행할 수 있다.
 
 @router.get("/recall", response_model=RecallResponse)
@@ -40,9 +36,13 @@ def recall(
     return get_service(request).recall(query, start_date, end_date, top_k)
 
 
-@router.get("/analytics")
-def analytics() -> None:
-    raise _not_implemented("감정 통계는 다음 단계에서 구현합니다.")
+@router.get("/analytics", response_model=AnalyticsOut)
+def analytics(
+    request: Request,
+    start_date: Date | None = None,
+    end_date: Date | None = None,
+) -> AnalyticsOut:
+    return get_service(request).analytics(start_date, end_date)
 
 
 @router.post("/image", response_model=DiaryOut)
@@ -98,9 +98,13 @@ def get_image(request: Request, diary_id: int) -> FileResponse:
     return FileResponse(path, media_type="image/jpeg")
 
 
-@router.get("/{diary_id}/similar")
-def similar(diary_id: int) -> None:
-    raise _not_implemented("비슷한 날 보기는 다음 단계에서 구현합니다.")
+@router.get("/{diary_id}/similar", response_model=RecallResponse)
+def similar(
+    request: Request,
+    diary_id: int,
+    top_k: int = Query(default=3, ge=1, le=20),
+) -> RecallResponse:
+    return _call(lambda: get_service(request).similar(diary_id, top_k))
 
 
 def _call(fn):

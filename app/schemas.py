@@ -50,3 +50,12 @@ class RecallResult(BaseModel):
 class RecallResponse(BaseModel):
     results: list[RecallResult]
     message: Optional[str] = None
+
+
+class AnalyticsOut(BaseModel):
+    """감정 통계 (기획서 4.4). average는 일기별 태그를 1/n씩 나눠 기간 평균을 낸 값이다."""
+    start_date: Optional[Date] = None
+    end_date: Optional[Date] = None
+    diary_count: int
+    average: dict[str, float]
+    top_keywords: list[str]
