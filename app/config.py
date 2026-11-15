@@ -7,6 +7,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent # config.py 기준으로 2단�
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "app.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
+# 리셋 스크립트가 넣는 데모 일기 (합성 데이터, Git 포함)
+DEMO_DATA_PATH = DATA_DIR / "demo" / "synthetic_examples.json"
 
 # 감정 모델 가중치 위치 (Git 제외, 서버에 직접 업로드). 환경 변수 MODEL_DIR로 바꿀 수 있다.
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", BASE_DIR / "models"))

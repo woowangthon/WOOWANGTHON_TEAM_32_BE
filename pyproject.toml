@@ -8,6 +8,8 @@ dependencies = [
     "fastapi[standard]>=0.162.4",
     "kiwipiepy>=0.24.1",
     "numpy>=2.4.6",
+    "sentence-transformers>=6.3.0",
+    "torch>=2.15.0",  # 직접 명시: tool.uv.sources(CPU 인덱스)는 직접 의존성에만 적용된다
 ]
 
 [dependency-groups]
@@ -19,3 +21,12 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# torch는 CPU 빌드만 받는다 (CUDA 패키지 수 GB를 피하기 위해). 기본 PyPI 인덱스는 torch에 쓰지 않는다.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
