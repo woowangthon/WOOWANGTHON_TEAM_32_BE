@@ -8,6 +8,9 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "app.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
 
+# 감정 모델 가중치 위치 (Git 제외, 서버에 직접 업로드). 환경 변수 MODEL_DIR로 바꿀 수 있다.
+MODEL_DIR = Path(os.environ.get("MODEL_DIR", BASE_DIR / "models"))
+
 # 감정 라벨 (기획서 3.2, 확정)
 EMOTION_LABELS = ["기쁨", "슬픔", "분노", "불안", "상처", "당황", "중립"]
 NEUTRAL_LABEL = "중립"

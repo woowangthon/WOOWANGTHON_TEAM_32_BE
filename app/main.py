@@ -5,7 +5,9 @@ from fastapi import FastAPI
 
 from app import config
 from app.api.routes import router
+from app.core import emotion
 from app.core.embedder import get_embedder
+from app.core.model_loader import load_emotion_classifier
 from app.db import get_connection, init_db
 from app.services.diary_service import DiaryService
 
@@ -13,6 +15,7 @@ from app.services.diary_service import DiaryService
 def create_app(db_path: Path | None = None) -> FastAPI:
     @asynccontextmanager # app의 lifespan 관리. yield 이전은 시작 시, yield 이후는 종료 시 실행.
     async def lifespan(app: FastAPI):
+        emotion.set_classifier(load_emotion_classifier()) # EMOTION_MODEL에 맞는 감정 분류기 설정
         init_db(db_path) # db 테이블 생성(이미 있으면 유지)
         conn = get_connection(db_path) # db 연결
         service = DiaryService(conn, get_embedder()) # DiaryService 객체 생성
