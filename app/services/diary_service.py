@@ -1,13 +1,16 @@
 """일기 등록·확정·수정·삭제·회상 검색의 비즈니스 로직 (기획서 3.1, 3.3)."""
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import date as Date
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
 from app import config
 from app.core import emotion
+from app.core.date_extractor import extract_date
 from app.core.embedder import Embedder
 from app.core.search_engine import Entry, VectorIndex
 from app.core.sentence_splitter import split_sentences
@@ -25,13 +28,18 @@ class DiaryNotFound(Exception):
     pass
 
 
+class OcrQuotaExceeded(Exception):
+    """하루 OCR 호출 한도(기획서 8, 100회)를 넘겼을 때."""
+
+
 class InvalidDiaryState(Exception):
     """요청이 현재 상태와 맞지 않을 때 (예: 날짜 없이 확정)."""
     pass
 
 
 class DiaryService:
-    def __init__(self, conn: sqlite3.Connection, embedder: Embedder): # db connection과 embedder 받아옴
+    def __init__(self, conn: sqlite3.Connection, embedder: Embedder, upload_dir: Path | None = None): # db connection과 embedder 받아옴
+        self.upload_dir = upload_dir or config.UPLOAD_DIR # 업로드 이미지 저장 폴더
         self.conn = conn
         self.embedder = embedder
         self.index = VectorIndex() # 일기 담고 관리하는 클래스(삭제, 수정, 검색 기능)
@@ -148,7 +156,7 @@ class DiaryService:
             status=row["status"],
             date=Date.fromisoformat(row["date"]) if row["date"] else None,
             content=row["content"],
-            image=None,  # 이미지 업로드·OCR 단계에서 연결 (현재 범위 밖)
+            image=self._image_url(row),
             suggested_tags=self._tags(diary_id, "suggested"),
             emotion_tags=self._tags(diary_id, "confirmed"),
             is_indexed=self._is_indexed(diary_id),
@@ -177,17 +185,57 @@ class DiaryService:
                     Entry(r["diary_id"], Date.fromisoformat(r["diary_date"]), r["text"], vec)
                 )
 
-    def create_text_draft(self, diary_date: Date, content: str) -> DiaryOut:
+    def create_text_draft(self, diary_date: Date | None, content: str) -> DiaryOut:
         with self._lock, self.conn: # 스레드 동기화(한번에 하나의 스레드만 사용). 트랜잭션 관리.
             now = self._now() # 현재 시간 문자열
             cur = self.conn.execute( # draft 일기 DB에 저장
                 "INSERT INTO diaries (date, content, status, created_at, updated_at)"
                 " VALUES (?, ?, 'draft', ?, ?)",
-                (diary_date.isoformat(), content, now, now),
+                (diary_date.isoformat() if diary_date else None, content, now, now),
             )
             diary_id = cur.lastrowid # 가장 최근에 넣은 일기의 행 번호
             self._store_analysis(diary_id, content) # 문장과 추천 감정 라벨 저장
             return self._to_out(diary_id, with_sentences=True) # 일기 저장 결과 반환
+
+    def create_from_image(
+        self,
+        image: bytes,
+        recognize: Callable[[bytes], str],
+        daily_limit: int,
+        today: Date,
+    ) -> DiaryOut:
+        """이미지를 OCR로 읽어 draft를 만든다. 날짜는 본문에서 찾고, 없으면 None으로 둔다."""
+        self._consume_ocr_quota(today, daily_limit) # OCR 호출 전에 횟수를 먼저 기록한다(실패해도 횟수는 소모)
+        text = recognize(image).strip() # DB 락 밖에서 호출한다. 외부 호출이 느려도 다른 요청을 막지 않는다
+        if not text:
+            raise InvalidDiaryState("글자를 인식하지 못했습니다. 더 선명한 사진으로 다시 올려 주세요.")
+        diary_date = extract_date(text)
+
+        with self._lock, self.conn:
+            now = self._now()
+            cur = self.conn.execute(
+                "INSERT INTO diaries (date, content, status, created_at, updated_at)"
+                " VALUES (?, ?, 'draft', ?, ?)",
+                (diary_date.isoformat() if diary_date else None, text, now, now),
+            )
+            diary_id = cur.lastrowid
+            self._store_analysis(diary_id, text)
+            filename = f"{diary_id}.jpg"
+            try:
+                self.upload_dir.mkdir(parents=True, exist_ok=True)
+                (self.upload_dir / filename).write_bytes(image)
+            except OSError:
+                (self.upload_dir / filename).unlink(missing_ok=True)
+                raise
+            self.conn.execute("UPDATE diaries SET image_path = ? WHERE id = ?", (filename, diary_id))
+            return self._to_out(diary_id, with_sentences=True)
+
+    def get_image_path(self, diary_id: int) -> Path | None:
+        """업로드 이미지의 파일 경로를 반환한다. 이미지가 없는 일기면 None."""
+        row = self._row(diary_id) # 없는 일기면 DiaryNotFound
+        if not row["image_path"]:
+            return None
+        return self.upload_dir / row["image_path"]
 
     def get(self, diary_id: int) -> DiaryOut: # 일기 조회 결과 반환
         return self._to_out(diary_id, with_sentences=True)
@@ -249,9 +297,10 @@ class DiaryService:
         with self._lock, self.conn: # 스레드 동기화. 트랜잭션 관리.
             row = self._row(diary_id) # 일기 가져옴
             self.conn.execute("DELETE FROM diaries WHERE id = ?", (diary_id,)) # DB에서 제거
-            self.conn.commit()  # DB 커밋 후에 인덱스를 갱신한다
+            self.conn.commit()  # DB 커밋 후에 인덱스와 파일을 정리한다
             self.index.remove_diary(diary_id) # 일기 관리 클래스에서도 제거
-            # TODO: row["image_path"]가 있으면 업로드 이미지 파일도 삭제 (이미지 단계에서 구현)
+            if row["image_path"]:
+                (self.upload_dir / row["image_path"]).unlink(missing_ok=True) # 업로드 이미지 파일 삭제
 
     def recall(
         self,
@@ -280,12 +329,29 @@ class DiaryService:
                     date=h.diary_date,
                     content=row["content"],
                     matched_text=h.matched_text,
-                    image=None,
+                    image=self._image_url(row),
                     emotion_tags=self._tags(h.diary_id, "confirmed"), # 확정된 감정 라벨
                     score=round(h.score, 4),
                 )
             )
         return RecallResponse(results=results, message=None)
+
+    def _consume_ocr_quota(self, today: Date, daily_limit: int) -> None:
+        key = today.isoformat()
+        with self._lock, self.conn: # 확인과 증가를 한 트랜잭션에서 하고, 바로 커밋한다
+            row = self.conn.execute("SELECT count FROM ocr_usage WHERE usage_date = ?", (key,)).fetchone()
+            used = row["count"] if row else 0
+            if used >= daily_limit:
+                raise OcrQuotaExceeded(f"오늘의 이미지 등록 한도({daily_limit}회)를 모두 사용했습니다. 내일 다시 시도해 주세요.")
+            self.conn.execute(
+                "INSERT INTO ocr_usage (usage_date, count) VALUES (?, 1)"
+                " ON CONFLICT(usage_date) DO UPDATE SET count = count + 1",
+                (key,),
+            )
+
+    @staticmethod
+    def _image_url(row: sqlite3.Row) -> str | None:
+        return f"/api/diaries/{row['id']}/image" if row["image_path"] else None
 
     def _has_sentences(self, diary_id: int) -> bool:
         row = self.conn.execute( # 문장 개수 계산

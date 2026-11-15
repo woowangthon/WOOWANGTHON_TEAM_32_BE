@@ -14,6 +14,11 @@ CREATE TABLE IF NOT EXISTS diaries (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ocr_usage (
+    usage_date  TEXT PRIMARY KEY,           -- YYYY-MM-DD (KST 기준)
+    count       INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS diary_tags (
     diary_id    INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
     label       TEXT NOT NULL,

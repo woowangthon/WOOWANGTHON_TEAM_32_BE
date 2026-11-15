@@ -24,3 +24,10 @@ MAX_TAG_CANDIDATES = 3
 
 # 임베딩 모델 (기획서 3.3, 확정). 실제 로딩은 core/embedder.py에서 담당.
 EMBEDDING_MODEL_NAME = "jhgan/ko-sroberta-multitask"
+
+# 이미지 업로드와 Clova OCR (기획서 3.1, 8)
+# 키와 호출 주소는 환경 변수로만 받는다 (코드·Git에 넣지 않음). 없으면 이미지 등록은 503.
+CLOVA_OCR_URL = os.environ.get("CLOVA_OCR_URL", "")
+CLOVA_OCR_SECRET = os.environ.get("CLOVA_OCR_SECRET", "")
+OCR_DAILY_LIMIT = 100  # 하루 OCR 호출 한도
+OCR_MAX_BYTES = 5 * 1024 * 1024  # 업로드 최대 5MB

@@ -14,3 +14,6 @@ data/uploads/
 
 # 모델 가중치 (대용량, 별도 전달)
 models/
+
+# 로컬 OCR 테스트용 개인 사진 (커밋 금지)
+/ocr_test_img.jpg

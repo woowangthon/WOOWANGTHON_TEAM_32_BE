@@ -1,11 +1,22 @@
 from datetime import date as Date
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 
+from app import config
+from app.core.ocr_client import OcrError
 from app.schemas import DiaryOut, DiaryTextCreate, DiaryUpdate, RecallResponse
-from app.services.diary_service import DiaryNotFound, DiaryService, InvalidDiaryState
+from app.services.diary_service import (
+    DiaryNotFound,
+    DiaryService,
+    InvalidDiaryState,
+    OcrQuotaExceeded,
+)
 
 router = APIRouter(prefix="/api/diaries", tags=["diaries"]) # 각 경로들을 모으고, 이후 main.py에서 include_router로 애플리케이션과 연결.
+
+JPEG_MAGIC = bytes([0xFF, 0xD8, 0xFF])  # jpg 파일 시작 바이트
 
 
 def get_service(request: Request) -> DiaryService:
@@ -34,9 +45,24 @@ def analytics() -> None:
     raise _not_implemented("감정 통계는 다음 단계에서 구현합니다.")
 
 
-@router.post("/image")
-def create_from_image() -> None:
-    raise _not_implemented("이미지 업로드·OCR은 OCR 연동 단계에서 구현합니다.")
+@router.post("/image", response_model=DiaryOut)
+def create_from_image(request: Request, file: UploadFile = File(...)) -> DiaryOut:
+    ocr = request.app.state.ocr
+    if ocr is None:
+        raise HTTPException(status_code=503, detail="OCR 설정이 없어 이미지 등록을 할 수 없습니다.")
+
+    name = (file.filename or "").lower()
+    if not name.endswith((".jpg", ".jpeg")):
+        raise HTTPException(status_code=422, detail="jpg 파일만 올릴 수 있습니다.")
+    data = file.file.read(config.OCR_MAX_BYTES + 1) # 한도보다 1바이트 더 읽어서 초과 여부를 확인한다
+    if len(data) > config.OCR_MAX_BYTES:
+        raise HTTPException(status_code=422, detail="5MB 이하 파일만 올릴 수 있습니다.")
+    if not data.startswith(JPEG_MAGIC): # JPEG 시그니처 확인 (확장자만 바꾼 파일 거르기)
+        raise HTTPException(status_code=422, detail="올바른 jpg 파일이 아닙니다.")
+
+    return _call(lambda: get_service(request).create_from_image(
+        data, ocr.recognize, config.OCR_DAILY_LIMIT, _today_kst(),
+    ))
 
 
 @router.post("/text", response_model=DiaryOut)
@@ -64,6 +90,14 @@ def delete_diary(request: Request, diary_id: int) -> None:
     _call(lambda: get_service(request).delete(diary_id))
 
 
+@router.get("/{diary_id}/image")
+def get_image(request: Request, diary_id: int) -> FileResponse:
+    path = _call(lambda: get_service(request).get_image_path(diary_id))
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="이미지가 없습니다.")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 @router.get("/{diary_id}/similar")
 def similar(diary_id: int) -> None:
     raise _not_implemented("비슷한 날 보기는 다음 단계에서 구현합니다.")
@@ -77,3 +111,12 @@ def _call(fn):
         raise HTTPException(status_code=404, detail="일기를 찾을 수 없습니다.")
     except InvalidDiaryState as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except OcrQuotaExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OcrError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+def _today_kst() -> Date:
+    """OCR 한도는 한국 날짜 기준으로 센다 (서버 시간대와 무관하게 고정)."""
+    return datetime.now(timezone(timedelta(hours=9))).date()
