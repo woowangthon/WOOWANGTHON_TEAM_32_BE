@@ -159,6 +159,16 @@ def test_extract_date(text, expected):
     assert extract_date(text) == expected
 
 
+def test_root_serves_demo_page_with_notices(setup):
+    client, _, _ = setup
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Re:mind" in r.text
+    assert "109" in r.text  # 위기 안내 문구
+    assert "실제 일기를 올리지" in r.text
+
+
 def test_parse_text_joins_lines_and_rejects_failure():
     data = {"images": [{"inferResult": "SUCCESS", "fields": [
         {"inferText": "오늘", "lineBreak": False},

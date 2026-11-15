@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager # app의 lifespan 관리
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from app import config
 from app.api.routes import router
@@ -36,9 +37,9 @@ def create_app(
     app = FastAPI(title="Re:mind API", lifespan=lifespan) # API 담당하는 FastAPI 객체 생성
     app.include_router(router) # 라우터를 FastAPI 애플리케이션에 등록
 
-    @app.get("/")
-    def root() -> dict:
-        return {"message": "Re:mind API", "docs": "/docs"}
+    @app.get("/", include_in_schema=False)
+    def root() -> FileResponse:
+        return FileResponse(config.BASE_DIR / "static" / "index.html", media_type="text/html; charset=utf-8")
 
     return app
 
